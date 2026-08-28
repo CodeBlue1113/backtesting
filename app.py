@@ -366,7 +366,7 @@ with st.sidebar:
     app_secret = st.text_input("APP Secret", type="password")
 
     st.header("📌 종목 / 기간")
-    srs_cd = st.text_input("종목코드 (SRS_CD)", value="MNQU6", help="예: MNQU6, MNQZ6 (월물 코드)")
+    srs_cd = st.text_input("종목코드 (SRS_CD)", value="MNQU26", help="예: MNQU6, MNQZ6 (월물 코드)")
     exch_cd = st.text_input("거래소코드 (EXCH_CD)", value="CME")
     close_date = st.text_input("조회 종료일 (YYYYMMDD)", value=datetime.now().strftime("%Y%m%d"))
     max_bars = st.number_input("최대 수집 봉 수", min_value=120, max_value=10000, value=3000, step=120,
