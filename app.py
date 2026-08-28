@@ -387,7 +387,7 @@ with st.sidebar:
         max_bars = 0
         st.info("Yahoo Finance는 API 키 없이 최근 약 5~7일 15분봉을 가져옵니다.")
         yf_symbol = st.text_input("Yahoo 심볼", value="MNQ=F", help="MNQ=F (연속), NQ=F 등")
-        yf_period = st.selectbox("기간", ["5d", "7d", "1y"], index=1)
+        yf_period = st.selectbox("기간", ["5d", "7d", "6m"], index=1)
 
     st.header("⚙️ 전략 파라미터")
     ema_length = st.number_input("EMA 기간", min_value=10, max_value=500, value=200)
