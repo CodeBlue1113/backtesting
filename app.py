@@ -107,7 +107,7 @@ class KISAPI:
         }
 
         all_rows = []
-        qry_tp = "Q"         # 최초 조회 (문서 Layout 기준 Q)
+        qry_tp = ""          # 최초 조회 (문서 개요: 공백)
         index_key = ""
         fetched = 0
 
