@@ -107,7 +107,7 @@ class KISAPI:
         }
 
         all_rows = []
-        qry_tp = ""          # 최초 조회
+        qry_tp = "Q"         # 최초 조회 (문서 Layout 기준 Q)
         index_key = ""
         fetched = 0
 
@@ -129,9 +129,8 @@ class KISAPI:
             try:
                 res = requests.get(url, headers=headers, params=params, timeout=15)
                 
-                # 응답이 JSON인지 먼저 확인
                 content_type = res.headers.get("Content-Type", "")
-                text_preview = res.text[:500] if res.text else "(빈 응답)"
+                text_preview = res.text[:800] if res.text else "(빈 응답)"
                 
                 if res.status_code != 200:
                     st.error(f"HTTP 오류 {res.status_code}")
@@ -140,8 +139,8 @@ class KISAPI:
                 
                 try:
                     data = res.json()
-                except Exception as json_err:
-                    st.error("서버가 JSON이 아닌 응답을 반환했습니다. (가장 흔한 원인: 잘못된 토큰/키 또는 종목코드)")
+                except Exception:
+                    st.error("서버가 JSON이 아닌 응답을 반환했습니다.")
                     st.write("**응답 미리보기:**")
                     st.code(text_preview, language="text")
                     st.write(f"Content-Type: {content_type}")
@@ -151,22 +150,28 @@ class KISAPI:
                 st.warning(f"API 호출 오류: {e}")
                 break
 
+            # 디버그: 첫 응답은 항상 출력
+            if fetched == 0:
+                st.write("🔍 **첫 번째 API 응답 (디버그):**")
+                st.json(data)
+
             if data.get("rt_cd") != "0":
                 msg = data.get("msg1", "알 수 없는 오류")
                 msg_cd = data.get("msg_cd", "")
-                if fetched == 0:
-                    st.error(f"조회 실패: {msg} (msg_cd={msg_cd})")
-                    # 자주 나오는 오류 안내
-                    if "기간" in msg or "조회" in msg:
-                        st.info("종목코드(SRS_CD)가 정확한 월물 코드인지 확인하세요. (예: MNQU6, MNQZ6)")
-                    if "인증" in msg or "토큰" in msg or "권한" in msg:
-                        st.info("APP Key / Secret이 맞는지, 토큰이 정상 발급됐는지 확인하세요.")
+                st.error(f"조회 실패: {msg} (msg_cd={msg_cd})")
+                if "기간" in msg or "조회" in msg or "종목" in msg:
+                    st.info("종목코드(SRS_CD)가 정확한 월물 코드인지 HTS에서 다시 확인하세요.")
+                if "인증" in msg or "토큰" in msg or "권한" in msg or "key" in str(msg).lower():
+                    st.info("APP Key / Secret이 맞는지, 재발급이 필요한지 확인하세요.")
                 break
 
             output1 = data.get("output1", [])
             output2 = data.get("output2", {})
 
             if not output1:
+                if fetched == 0:
+                    st.warning("API는 성공했으나 분봉 데이터(output1)가 비어 있습니다.")
+                    st.info("가능한 원인: ① 해당 월물에 데이터 없음  ② 조회 종료일 문제  ③ CME 시세 권한 없음")
                 break
 
             for row in output1:
