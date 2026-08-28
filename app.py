@@ -51,13 +51,22 @@ class KISAPI:
         }
         try:
             res = requests.post(url, headers=headers, json=body, timeout=10)
-            data = res.json()
+            text_preview = res.text[:400] if res.text else "(빈 응답)"
+            
+            try:
+                data = res.json()
+            except Exception:
+                st.error("토큰 발급 응답이 JSON이 아닙니다.")
+                st.code(text_preview, language="text")
+                return False
+                
             if "access_token" in data:
                 self.access_token = data["access_token"]
                 self.token_expired = data.get("access_token_token_expired", "")
                 return True
             else:
-                st.error(f"토큰 발급 실패: {data.get('msg1', data)}")
+                st.error(f"토큰 발급 실패: {data.get('error_description') or data.get('msg1') or data}")
+                st.code(str(data), language="json")
                 return False
         except Exception as e:
             st.error(f"토큰 발급 중 오류: {e}")
@@ -119,15 +128,39 @@ class KISAPI:
 
             try:
                 res = requests.get(url, headers=headers, params=params, timeout=15)
-                data = res.json()
+                
+                # 응답이 JSON인지 먼저 확인
+                content_type = res.headers.get("Content-Type", "")
+                text_preview = res.text[:500] if res.text else "(빈 응답)"
+                
+                if res.status_code != 200:
+                    st.error(f"HTTP 오류 {res.status_code}")
+                    st.code(text_preview, language="text")
+                    break
+                
+                try:
+                    data = res.json()
+                except Exception as json_err:
+                    st.error("서버가 JSON이 아닌 응답을 반환했습니다. (가장 흔한 원인: 잘못된 토큰/키 또는 종목코드)")
+                    st.write("**응답 미리보기:**")
+                    st.code(text_preview, language="text")
+                    st.write(f"Content-Type: {content_type}")
+                    break
+                    
             except Exception as e:
                 st.warning(f"API 호출 오류: {e}")
                 break
 
             if data.get("rt_cd") != "0":
                 msg = data.get("msg1", "알 수 없는 오류")
+                msg_cd = data.get("msg_cd", "")
                 if fetched == 0:
-                    st.error(f"조회 실패: {msg} (msg_cd={data.get('msg_cd')})")
+                    st.error(f"조회 실패: {msg} (msg_cd={msg_cd})")
+                    # 자주 나오는 오류 안내
+                    if "기간" in msg or "조회" in msg:
+                        st.info("종목코드(SRS_CD)가 정확한 월물 코드인지 확인하세요. (예: MNQU6, MNQZ6)")
+                    if "인증" in msg or "토큰" in msg or "권한" in msg:
+                        st.info("APP Key / Secret이 맞는지, 토큰이 정상 발급됐는지 확인하세요.")
                 break
 
             output1 = data.get("output1", [])
