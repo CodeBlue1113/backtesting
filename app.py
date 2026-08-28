@@ -19,6 +19,12 @@ from plotly.subplots import make_subplots
 import warnings
 warnings.filterwarnings("ignore")
 
+try:
+    import yfinance as yf
+    YF_AVAILABLE = True
+except ImportError:
+    YF_AVAILABLE = False
+
 # =========================
 # 페이지 설정
 # =========================
@@ -357,20 +363,31 @@ def run_strategy(
 # Streamlit UI
 # =========================
 st.title("📈 MNQ 15분봉 BB Basis × EMA200 백테스트")
-st.caption("한국투자증권 해외선물 분봉 API 기반 · 개인용")
+st.caption("개인용 백테스트 · 한국투자 API / Yahoo Finance 지원")
 
 with st.sidebar:
-    st.header("🔑 API 설정")
-    st.warning("APP Key / Secret은 절대 공유하지 마세요. 유출 시 즉시 재발급하세요.")
-    app_key = st.text_input("APP Key", type="password", help="한국투자증권 개발자센터에서 발급")
-    app_secret = st.text_input("APP Secret", type="password")
+    st.header("📂 데이터 소스")
+    data_source = st.radio(
+        "데이터 가져올 곳",
+        ["Yahoo Finance (무료, 최근 데이터)", "한국투자증권 API (CME 권한 필요)"],
+        index=0
+    )
 
-    st.header("📌 종목 / 기간")
-    srs_cd = st.text_input("종목코드 (SRS_CD)", value="MNQU26", help="예: MNQU6, MNQZ6 (월물 코드)")
-    exch_cd = st.text_input("거래소코드 (EXCH_CD)", value="CME")
-    close_date = st.text_input("조회 종료일 (YYYYMMDD)", value=datetime.now().strftime("%Y%m%d"))
-    max_bars = st.number_input("최대 수집 봉 수", min_value=120, max_value=10000, value=3000, step=120,
-                               help="API 제한으로 실제 수집량은 더 적을 수 있습니다. 5년치는 현실적으로 어렵습니다.")
+    if data_source.startswith("한국투자"):
+        st.header("🔑 API 설정")
+        st.warning("APP Key / Secret은 절대 공유하지 마세요.")
+        app_key = st.text_input("APP Key", type="password")
+        app_secret = st.text_input("APP Secret", type="password")
+        srs_cd = st.text_input("종목코드 (SRS_CD)", value="MNQU26", help="예: MNQU26")
+        exch_cd = st.text_input("거래소코드", value="CME")
+        close_date = st.text_input("조회 종료일 (YYYYMMDD)", value=datetime.now().strftime("%Y%m%d"))
+        max_bars = st.number_input("최대 수집 봉 수", min_value=120, max_value=10000, value=2000, step=120)
+    else:
+        app_key = app_secret = srs_cd = exch_cd = close_date = ""
+        max_bars = 0
+        st.info("Yahoo Finance는 API 키 없이 최근 약 5~7일 15분봉을 가져옵니다.")
+        yf_symbol = st.text_input("Yahoo 심볼", value="MNQ=F", help="MNQ=F (연속), NQ=F 등")
+        yf_period = st.selectbox("기간", ["5d", "7d", "1mo"], index=1)
 
     st.header("⚙️ 전략 파라미터")
     ema_length = st.number_input("EMA 기간", min_value=10, max_value=500, value=200)
@@ -383,14 +400,44 @@ with st.sidebar:
 
 # 메인 영역
 if run_btn:
-    if not app_key or not app_secret:
-        st.error("APP Key와 APP Secret을 입력해주세요.")
+    df = pd.DataFrame()
+
+    if data_source.startswith("Yahoo"):
+        if not YF_AVAILABLE:
+            st.error("yfinance가 설치되지 않았습니다. requirements.txt에 yfinance를 추가하고 재배포하세요.")
+            st.stop()
+        with st.spinner("Yahoo Finance에서 15분봉 가져오는 중..."):
+            try:
+                ticker = yf.Ticker(yf_symbol.strip())
+                hist = ticker.history(period=yf_period, interval="15m")
+                if hist.empty:
+                    st.error("Yahoo에서 데이터를 가져오지 못했습니다. 심볼을 확인하세요. (예: MNQ=F)")
+                    st.stop()
+                hist = hist.reset_index()
+                # 컬럼 정리
+                if "Datetime" in hist.columns:
+                    hist = hist.rename(columns={"Datetime": "datetime"})
+                elif "Date" in hist.columns:
+                    hist = hist.rename(columns={"Date": "datetime"})
+                hist.columns = [c.lower() for c in hist.columns]
+                df = hist[["datetime", "open", "high", "low", "close", "volume"]].copy()
+                df["datetime"] = pd.to_datetime(df["datetime"])
+                # timezone 제거
+                if df["datetime"].dt.tz is not None:
+                    df["datetime"] = df["datetime"].dt.tz_localize(None)
+                df = df.dropna().sort_values("datetime").reset_index(drop=True)
+            except Exception as e:
+                st.error(f"Yahoo Finance 오류: {e}")
+                st.stop()
     else:
-        with st.spinner("데이터 수집 중... (연속 조회라 시간이 걸릴 수 있습니다)"):
+        # 한국투자증권 API
+        if not app_key or not app_secret:
+            st.error("APP Key와 APP Secret을 입력해주세요.")
+            st.stop()
+        with st.spinner("한국투자증권 API에서 데이터 수집 중..."):
             api = KISAPI(app_key, app_secret)
             if not api.get_access_token():
                 st.stop()
-
             df = api.fetch_minute_bars(
                 srs_cd=srs_cd.strip(),
                 exch_cd=exch_cd.strip(),
@@ -399,150 +446,148 @@ if run_btn:
                 max_bars=int(max_bars)
             )
 
-        if df.empty:
-            st.error("데이터를 가져오지 못했습니다. 종목코드·날짜·API 키를 확인하세요.")
-            st.info("MNQ 월물 코드 예시: MNQU6 (2026년 9월), MNQZ6 (2026년 12월) 등. HTS에서 정확한 코드를 확인하세요.")
+    if df.empty:
+        st.error("데이터를 가져오지 못했습니다. 설정을 확인하세요.")
+        st.stop()
+
+    st.success(f"수집 완료: {len(df)}개 봉  ({df['datetime'].min()} ~ {df['datetime'].max()})")
+
+    with st.spinner("전략 백테스트 실행 중..."):
+        result_df, stats = run_strategy(
+            df,
+            ema_length=int(ema_length),
+            bb_length=int(bb_length),
+            bb_mult=float(bb_mult),
+            initial_capital=float(initial_capital),
+            qty=float(qty)
+        )
+
+    if "error" in stats:
+        st.error(stats["error"])
+    else:
+        # 성과 요약
+        col1, col2, col3, col4, col5 = st.columns(5)
+        col1.metric("최종 자본", f"${stats['final_equity']:,.2f}")
+        col2.metric("총 수익률", f"{stats['total_return_pct']:.2f}%")
+        col3.metric("총 거래 수", f"{stats['total_trades']}")
+        col4.metric("승률", f"{stats['win_rate']:.1f}%")
+        col5.metric("최대 낙폭(MDD)", f"{stats['max_drawdown_pct']:.2f}%")
+
+        # 차트
+        st.subheader("가격 + 지표 + 신호")
+        fig = make_subplots(
+            rows=2, cols=1,
+            shared_xaxes=True,
+            vertical_spacing=0.05,
+            row_heights=[0.7, 0.3],
+            subplot_titles=("가격 / EMA / BB", "Equity Curve")
+        )
+
+        # 캔들
+        fig.add_trace(go.Candlestick(
+            x=result_df["datetime"],
+            open=result_df["open"],
+            high=result_df["high"],
+            low=result_df["low"],
+            close=result_df["close"],
+            name="Price"
+        ), row=1, col=1)
+
+        fig.add_trace(go.Scatter(
+            x=result_df["datetime"], y=result_df["ema"],
+            name=f"EMA{ema_length}", line=dict(color="blue", width=1.5)
+        ), row=1, col=1)
+
+        fig.add_trace(go.Scatter(
+            x=result_df["datetime"], y=result_df["bb_basis"],
+            name="BB Basis", line=dict(color="orange", width=1.5)
+        ), row=1, col=1)
+
+        fig.add_trace(go.Scatter(
+            x=result_df["datetime"], y=result_df["bb_upper"],
+            name="BB Upper", line=dict(color="gray", width=1, dash="dot"), opacity=0.5
+        ), row=1, col=1)
+
+        fig.add_trace(go.Scatter(
+            x=result_df["datetime"], y=result_df["bb_lower"],
+            name="BB Lower", line=dict(color="gray", width=1, dash="dot"), opacity=0.5
+        ), row=1, col=1)
+
+        # 진입/청산 마커
+        trades_df = stats["trades_df"]
+        if not trades_df.empty:
+            long_entries = trades_df[trades_df["side"] == "Long"]
+            short_entries = trades_df[trades_df["side"] == "Short"]
+
+            if not long_entries.empty:
+                fig.add_trace(go.Scatter(
+                    x=long_entries["entry_time"], y=long_entries["entry_price"],
+                    mode="markers", name="Long Entry",
+                    marker=dict(symbol="triangle-up", size=10, color="green")
+                ), row=1, col=1)
+                fig.add_trace(go.Scatter(
+                    x=long_entries["exit_time"], y=long_entries["exit_price"],
+                    mode="markers", name="Long Exit",
+                    marker=dict(symbol="x", size=9, color="fuchsia")
+                ), row=1, col=1)
+
+            if not short_entries.empty:
+                fig.add_trace(go.Scatter(
+                    x=short_entries["entry_time"], y=short_entries["entry_price"],
+                    mode="markers", name="Short Entry",
+                    marker=dict(symbol="triangle-down", size=10, color="red")
+                ), row=1, col=1)
+                fig.add_trace(go.Scatter(
+                    x=short_entries["exit_time"], y=short_entries["exit_price"],
+                    mode="markers", name="Short Exit",
+                    marker=dict(symbol="x", size=9, color="fuchsia")
+                ), row=1, col=1)
+
+        # Equity
+        fig.add_trace(go.Scatter(
+            x=result_df["datetime"], y=result_df["equity"],
+            name="Equity", line=dict(color="purple", width=2), fill="tozeroy"
+        ), row=2, col=1)
+
+        fig.update_layout(
+            height=800,
+            xaxis_rangeslider_visible=False,
+            legend=dict(orientation="h", yanchor="bottom", y=1.02)
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+        # 거래 내역
+        if not trades_df.empty:
+            st.subheader("거래 내역")
+            st.dataframe(
+                trades_df.style.format({
+                    "entry_price": "{:.2f}",
+                    "exit_price": "{:.2f}",
+                    "pnl": "{:.2f}",
+                    "equity": "{:.2f}"
+                }),
+                use_container_width=True
+            )
         else:
-            st.success(f"수집 완료: {len(df)}개 봉  ({df['datetime'].min()} ~ {df['datetime'].max()})")
+            st.info("해당 기간에 발생한 거래가 없습니다.")
 
-            with st.spinner("전략 백테스트 실행 중..."):
-                result_df, stats = run_strategy(
-                    df,
-                    ema_length=int(ema_length),
-                    bb_length=int(bb_length),
-                    bb_mult=float(bb_mult),
-                    initial_capital=float(initial_capital),
-                    qty=float(qty)
-                )
-
-            if "error" in stats:
-                st.error(stats["error"])
-            else:
-                # 성과 요약
-                col1, col2, col3, col4, col5 = st.columns(5)
-                col1.metric("최종 자본", f"${stats['final_equity']:,.2f}")
-                col2.metric("총 수익률", f"{stats['total_return_pct']:.2f}%")
-                col3.metric("총 거래 수", f"{stats['total_trades']}")
-                col4.metric("승률", f"{stats['win_rate']:.1f}%")
-                col5.metric("최대 낙폭(MDD)", f"{stats['max_drawdown_pct']:.2f}%")
-
-                # 차트
-                st.subheader("가격 + 지표 + 신호")
-                fig = make_subplots(
-                    rows=2, cols=1,
-                    shared_xaxes=True,
-                    vertical_spacing=0.05,
-                    row_heights=[0.7, 0.3],
-                    subplot_titles=("가격 / EMA / BB", "Equity Curve")
-                )
-
-                # 캔들
-                fig.add_trace(go.Candlestick(
-                    x=result_df["datetime"],
-                    open=result_df["open"],
-                    high=result_df["high"],
-                    low=result_df["low"],
-                    close=result_df["close"],
-                    name="Price"
-                ), row=1, col=1)
-
-                fig.add_trace(go.Scatter(
-                    x=result_df["datetime"], y=result_df["ema"],
-                    name=f"EMA{ema_length}", line=dict(color="blue", width=1.5)
-                ), row=1, col=1)
-
-                fig.add_trace(go.Scatter(
-                    x=result_df["datetime"], y=result_df["bb_basis"],
-                    name="BB Basis", line=dict(color="orange", width=1.5)
-                ), row=1, col=1)
-
-                fig.add_trace(go.Scatter(
-                    x=result_df["datetime"], y=result_df["bb_upper"],
-                    name="BB Upper", line=dict(color="gray", width=1, dash="dot"), opacity=0.5
-                ), row=1, col=1)
-
-                fig.add_trace(go.Scatter(
-                    x=result_df["datetime"], y=result_df["bb_lower"],
-                    name="BB Lower", line=dict(color="gray", width=1, dash="dot"), opacity=0.5
-                ), row=1, col=1)
-
-                # 진입/청산 마커 (trades에서)
-                trades_df = stats["trades_df"]
-                if not trades_df.empty:
-                    long_entries = trades_df[trades_df["side"] == "Long"]
-                    short_entries = trades_df[trades_df["side"] == "Short"]
-
-                    if not long_entries.empty:
-                        fig.add_trace(go.Scatter(
-                            x=long_entries["entry_time"], y=long_entries["entry_price"],
-                            mode="markers", name="Long Entry",
-                            marker=dict(symbol="triangle-up", size=10, color="green")
-                        ), row=1, col=1)
-                        fig.add_trace(go.Scatter(
-                            x=long_entries["exit_time"], y=long_entries["exit_price"],
-                            mode="markers", name="Long Exit",
-                            marker=dict(symbol="x", size=9, color="fuchsia")
-                        ), row=1, col=1)
-
-                    if not short_entries.empty:
-                        fig.add_trace(go.Scatter(
-                            x=short_entries["entry_time"], y=short_entries["entry_price"],
-                            mode="markers", name="Short Entry",
-                            marker=dict(symbol="triangle-down", size=10, color="red")
-                        ), row=1, col=1)
-                        fig.add_trace(go.Scatter(
-                            x=short_entries["exit_time"], y=short_entries["exit_price"],
-                            mode="markers", name="Short Exit",
-                            marker=dict(symbol="x", size=9, color="fuchsia")
-                        ), row=1, col=1)
-
-                # Equity
-                fig.add_trace(go.Scatter(
-                    x=result_df["datetime"], y=result_df["equity"],
-                    name="Equity", line=dict(color="purple", width=2), fill="tozeroy"
-                ), row=2, col=1)
-
-                fig.update_layout(
-                    height=800,
-                    xaxis_rangeslider_visible=False,
-                    legend=dict(orientation="h", yanchor="bottom", y=1.02)
-                )
-                st.plotly_chart(fig, use_container_width=True)
-
-                # 거래 내역
-                if not trades_df.empty:
-                    st.subheader("거래 내역")
-                    st.dataframe(
-                        trades_df.style.format({
-                            "entry_price": "{:.2f}",
-                            "exit_price": "{:.2f}",
-                            "pnl": "{:.2f}",
-                            "equity": "{:.2f}"
-                        }),
-                        use_container_width=True
-                    )
-                else:
-                    st.info("해당 기간에 발생한 거래가 없습니다.")
-
-                # 데이터 다운로드
-                csv = result_df.to_csv(index=False).encode("utf-8-sig")
-                st.download_button(
-                    "결과 데이터 CSV 다운로드",
-                    csv,
-                    file_name=f"MNQ_backtest_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
-                    mime="text/csv"
-                )
+        # 데이터 다운로드
+        csv = result_df.to_csv(index=False).encode("utf-8-sig")
+        st.download_button(
+            "결과 데이터 CSV 다운로드",
+            csv,
+            file_name=f"MNQ_backtest_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+            mime="text/csv"
+        )
 
 else:
-    st.info("왼쪽 사이드바에서 API 키와 설정을 입력한 뒤 **백테스트 실행** 버튼을 눌러주세요.")
+    st.info("왼쪽 사이드바에서 데이터 소스를 선택하고 **백테스트 실행** 버튼을 눌러주세요.")
     st.markdown("""
-    ### 사용 전 참고사항
-    - **종목코드**: HTS(eFriend) 해외선물 종목 검색에서 정확한 월물 코드를 확인하세요.  
-      예) 2026년 9월물 → `MNQU6`, 12월물 → `MNQZ6`
-    - **5년 데이터**: API 특성상 최근 데이터 위주로 제공됩니다. 긴 기간은 여러 월물을 롤오버하며 수집해야 하며, 이 앱은 단일 월물 기준입니다.
-    - **CME 시세**: 유료시세일 수 있습니다. 포럼 FAQ를 확인하세요.
-    - **보안**: APP Key/Secret은 브라우저에만 입력되고 서버에 저장되지 않습니다. 유출 시 즉시 재발급하세요.
+    ### 사용 안내
+    - **Yahoo Finance (추천)**: API 키 없이 최근 5~7일 15분봉을 무료로 가져옵니다. 심볼 예: `MNQ=F`
+    - **한국투자증권 API**: CME 시세 권한이 있는 계좌만 사용 가능합니다.
+    - EMA 기간이 200이라 데이터가 너무 짧으면 신호가 거의 안 나올 수 있습니다. 필요시 EMA를 20~50으로 줄여보세요.
     """)
 
 st.markdown("---")
-st.caption("Personal use only · Not financial advice · Data from Korea Investment & Securities Open API")
+st.caption("Personal use only · Not financial advice")
